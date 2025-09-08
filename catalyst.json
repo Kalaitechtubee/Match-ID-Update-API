@@ -1,8 +1,9 @@
 {
   "appsail": [
     {
+      "name": "cricketbackend",
       "source": ".",
-      "name": "cricket-backend"
+      "stack": "node20"
     }
   ]
 }
