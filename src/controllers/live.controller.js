@@ -25,7 +25,7 @@ exports.getLiveMatch = async (req, res) => {
         if (!discovery.success || discovery.matches.length === 0) {
             return res.status(503).json({
                 success: false,
-                error: 'No cricket matches found from any source',
+                error: 'No T20 World Cup matches found from any source',
                 engine: {
                     discovery: { source: discovery.source, matchCount: 0 },
                 },
@@ -47,97 +47,125 @@ exports.getLiveMatch = async (req, res) => {
 
         const matchId = resolution.matchId;
 
-        // ──────── STEP 3: FETCH COMMENTARY DATA ────────
-        let commentaryResult = await discoveryService.fetchCommentary(matchId);
+        // ──────── STEP 3: FETCH COMMENTARY DATA WITH ROBUST RETRIES ────────
+        let commentaryResult;
+        let retryCount = 0;
+        const MAX_RETRIES = 2;
 
-        // If commentary fails, try fallback — retry once
-        if (!commentaryResult.success) {
-            console.log(`⚠️ [Live] Commentary failed for ${matchId}, retrying...`);
-            await new Promise(r => setTimeout(r, 500));
-            commentaryResult = await discoveryService.fetchCommentary(matchId);
+        while (retryCount <= MAX_RETRIES) {
+            try {
+                commentaryResult = await discoveryService.fetchCommentary(matchId);
+
+                if (commentaryResult.success) {
+                    // ──────── STEP 4: STRICT VALIDATION ────────
+                    const validation = intelligenceService.validateCommentaryData(commentaryResult.data);
+
+                    if (validation.valid) {
+                        // Success! Update match state and return
+                        if (validation.isComplete && !validation.isLive) {
+                            const active = intelligenceService.getActiveMatch();
+                            if (active.matchId === matchId) active.state = 'Complete';
+                        }
+
+                        const elapsed = Date.now() - startTime;
+                        const activeMatch = intelligenceService.getActiveMatch();
+
+                        return res.json({
+                            success: true,
+                            matchId,
+                            data: commentaryResult.data,
+                            engine: {
+                                discovery: {
+                                    source: discovery.source,
+                                    totalMatches: discovery.matches.length,
+                                    liveMatches: discovery.matches.filter(m => m.isLive).length,
+                                    cached: discovery.cached || false,
+                                },
+                                intelligence: {
+                                    selectedReason: resolution.selection?.reason,
+                                    priority: resolution.selection?.priority,
+                                    alternatives: resolution.selection?.alternatives || [],
+                                },
+                                continuity: resolution.continuity,
+                                validation: {
+                                    valid: true,
+                                    matchState: validation.state,
+                                    isLive: validation.isLive,
+                                },
+                                activeMatch: {
+                                    matchId: activeMatch.matchId,
+                                    teams: `${activeMatch.team1?.name || '?'} vs ${activeMatch.team2?.name || '?'}`,
+                                    series: activeMatch.seriesName,
+                                    selectedAt: new Date(activeMatch.selectedAt).toISOString(),
+                                },
+                                responseTime: `${elapsed}ms`,
+                            },
+                            timestamp: new Date().toISOString(),
+                        });
+                    } else {
+                        console.log(`⚠️ [Live] Data validation failed for ${matchId} (Attempt ${retryCount + 1}): ${validation.issues.join(', ')}`);
+                    }
+                }
+            } catch (err) {
+                console.log(`❌ [Live] Fetch error for ${matchId} (Attempt ${retryCount + 1}): ${err.message}`);
+            }
+
+            retryCount++;
+            if (retryCount <= MAX_RETRIES) {
+                const delay = 800 * retryCount; // Increasing backoff
+                console.log(`⏳ [Live] Retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+
+                // On last retry, maybe try clearing discovery cache to see if matchId changed?
+                if (retryCount === MAX_RETRIES) discoveryService.clearCache();
+            }
         }
 
-        // If still fails, try the next best match
-        if (!commentaryResult.success && resolution.selection.alternatives?.length > 0) {
-            console.log('⚠️ [Live] Primary match commentary unavailable, trying alternative...');
+        // If we reach here, primary match failed even after retries. Try alternative ONE time.
+        if (resolution.selection.alternatives?.length > 0) {
+            console.log('⚠️ [Live] Primary match failed after retries, trying the next best alternative...');
             const altMatch = resolution.selection.alternatives[0];
-            commentaryResult = await discoveryService.fetchCommentary(altMatch.matchId);
+            const altResult = await discoveryService.fetchCommentary(altMatch.matchId);
 
-            if (commentaryResult.success) {
-                // Update active match to the alternative
-                const altFull = discovery.matches.find(m => m.matchId === altMatch.matchId);
-                if (altFull) {
-                    intelligenceService.setActiveMatch(altFull, 'Switched to alternative — primary commentary unavailable');
+            if (altResult.success) {
+                const altValidation = intelligenceService.validateCommentaryData(altResult.data);
+                if (altValidation.valid) {
+                    const altFull = discovery.matches.find(m => m.matchId === altMatch.matchId);
+                    if (altFull) {
+                        intelligenceService.setActiveMatch(altFull, 'Switched to alternative — primary failed validation multiple times');
+                    }
+
+                    const elapsed = Date.now() - startTime;
+                    return res.json({
+                        success: true,
+                        matchId: altMatch.matchId,
+                        data: altResult.data,
+                        engine: {
+                            discovery: { source: discovery.source, matchCount: discovery.matches.length },
+                            intelligence: { switchedToAlternative: true },
+                            responseTime: `${elapsed}ms`,
+                        },
+                        timestamp: new Date().toISOString(),
+                    });
                 }
             }
         }
 
-        if (!commentaryResult.success) {
-            return res.status(502).json({
-                success: false,
-                error: 'Failed to fetch commentary data from Cricbuzz',
-                matchId,
-                engine: {
-                    discovery: { source: discovery.source, matchCount: discovery.matches.length, cached: discovery.cached },
-                    resolution: { matchId, reason: resolution.selection?.reason },
-                },
-                timestamp: new Date().toISOString(),
-            });
-        }
-
-        // ──────── STEP 4: VALIDATE DATA ────────
-        const validation = intelligenceService.validateCommentaryData(commentaryResult.data);
-
-        // Update match state from commentary data
-        if (validation.isComplete && !validation.isLive) {
-            // Match just completed — mark for next refresh to switch
-            const active = intelligenceService.getActiveMatch();
-            if (active.matchId === matchId) {
-                active.state = 'Complete';
-            }
-        }
-
-        // ──────── STEP 5: RETURN INTELLIGENT RESPONSE ────────
-        const elapsed = Date.now() - startTime;
-        const activeMatch = intelligenceService.getActiveMatch();
-
-        res.json({
-            success: true,
+        // Ultimate failure
+        return res.status(502).json({
+            success: false,
+            error: 'Failed to retrieve valid match data after multiple attempts',
             matchId,
-            data: commentaryResult.data,
             engine: {
-                discovery: {
-                    source: discovery.source,
-                    totalMatches: discovery.matches.length,
-                    liveMatches: discovery.matches.filter(m => m.isLive).length,
-                    cached: discovery.cached || false,
-                },
-                intelligence: {
-                    selectedReason: resolution.selection?.reason,
-                    priority: resolution.selection?.priority,
-                    alternatives: resolution.selection?.alternatives || [],
-                    allLiveCount: resolution.selection?.allLiveCount,
-                },
-                continuity: resolution.continuity,
-                validation: {
-                    valid: validation.valid,
-                    issues: validation.issues,
-                    matchState: validation.state,
-                    isLive: validation.isLive,
-                },
-                activeMatch: {
-                    matchId: activeMatch.matchId,
-                    teams: `${activeMatch.team1?.name || '?'} vs ${activeMatch.team2?.name || '?'}`,
-                    series: activeMatch.seriesName,
-                    selectedAt: new Date(activeMatch.selectedAt).toISOString(),
-                },
-                responseTime: `${elapsed}ms`,
+                discovery: { source: discovery.source, matchCount: discovery.matches.length },
+                resolution: { matchId, reason: resolution.selection?.reason },
+                retries: retryCount,
             },
             timestamp: new Date().toISOString(),
         });
 
     } catch (error) {
-        console.error('❌ [Live] Unhandled error:', error);
+        console.error('❌ [Live] Unhandled error in Live Match Engine:', error);
         res.status(500).json({
             success: false,
             error: 'Internal server error in Live Match Engine',

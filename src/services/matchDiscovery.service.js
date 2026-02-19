@@ -181,6 +181,25 @@ async function discoverMatches(forceRefresh = false) {
         result = await discoverFromScraper();
     }
 
+    // 🏆 T20 WORLD CUP ONLY FILTER
+    // As per requirement: Only scrape and display T20 World Cup matches
+    if (result.success && result.matches.length > 0) {
+        console.log('🏟️ [Discovery] Applying T20 World Cup strict filter...');
+        result.matches = result.matches.filter(m => {
+            const series = (m.seriesName || '').toLowerCase();
+            const desc = (m.matchDesc || '').toLowerCase();
+            const allText = `${series} ${desc}`.toLowerCase();
+
+            // Check for T20 World Cup keywords
+            const isT20WC = (allText.includes('t20') && allText.includes('world cup')) ||
+                allText.includes('men\'s t20 wc') ||
+                allText.includes('t20wc');
+
+            return isT20WC;
+        });
+        console.log(`🏟️ [Discovery] Filter complete. Found ${result.matches.length} T20 World Cup matches.`);
+    }
+
     // Update cache
     if (result.success && result.matches.length > 0) {
         discoveryCache = {
