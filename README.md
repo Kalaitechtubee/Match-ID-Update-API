@@ -1,23 +1,28 @@
-# 🏏 Cricket Live Backend: Intelligence & Discovery Engine
+# 🏏 Cricket Live Backend v3.0: Intelligence & Discovery Engine
 
-The core engine responsible for discovering live cricket matches, prioritizing them, and scraping real-time data from various sources.
+The high-performance core responsible for discovering live cricket matches, prioritizing them, and scraping real-time data. In v3.0, the engine is specifically optimized for the **ICC Men's T20 World Cup 2026**.
 
 ---
 
-## 🚀 Key Modules
+## 🚀 Key Modules (v3.0 Architecture)
 
-### 1. Intelligent Discovery Service
-Automatically scans live listings (Cricbuzz, etc.) and uses a priority-based selection algorithm:
-*   **Priority 1**: Indian National Team matches.
-*   **Priority 2**: IPL (Indian Premier League).
-*   **Priority 3**: Major ICC Tournaments (WC, Champions Trophy).
-*   **Priority 4**: Other International / Domestic T20 leagues.
+### 1. Robust Discovery Engine (Layer 1)
+Automatically scans live listings via the Cricbuzz Mobile API with a Puppeteer fallback. 
+*   **Strict Filter**: Now includes a regex-based filter specifically for T20 World Cup matches.
+*   **Intelligent Cache**: 60-second in-memory discovery cache to prevent API flooding.
 
-### 2. Match Intelligence Service
-Maintains state continuity. If a match is selected, the engine "sticks" to it unless it ends or a significantly higher priority match starts.
+### 2. Priority Intelligence (Layer 2)
+Uses a weighted priority system to select the "Best Match":
+1.  **T20 World Cup Finals/Semi-Finals** (Top Priority)
+2.  **India T20 World Cup Matches**
+3.  **Other T20 World Cup Fixtures**
 
-### 3. Scraping Engine
-Uses **Puppeteer** for heavy dynamic pages and **Cheerio** for lightweight data extraction. Optimized for performance and stealth.
+### 3. Match Continuity Manager (Layer 3)
+Prevents flickering or unnecessary jumping between matches. Once a T20 WC match is selected, the engine remains focused on it until completion or until a higher-stakes game begins.
+
+### 4. Data Validation Layer (Layer 4)
+*   **Strict Integrity Checks**: Ensures `matchHeader`, `miniscore`, and `commentary` are all present.
+*   **Robust Retries**: Implements 3-tier fetch retries with exponential backoff to handle scraping timeouts gracefully.
 
 ---
 
@@ -25,27 +30,28 @@ Uses **Puppeteer** for heavy dynamic pages and **Cheerio** for lightweight data 
 
 | Route | Description |
 | :--- | :--- |
-| `GET /api/cricbuzz/live` | The "Smart" endpoint. Returns data for the best live match found. |
-| `GET /api/cricbuzz/live/status` | Current engine state and selection metadata. |
-| `GET /api/cricbuzz/live/discover` | List of all detected matches with priority scores. |
-| `POST /api/cricbuzz/live/reset` | Clear engine state (useful for forcing new discovery). |
+| `GET /api/cricbuzz/live` | **The Intelligent Entry**. Returns the single best T20 WC match data. |
+| `GET /api/cricbuzz/live/status` | Engine internal state, active match selection reason, and diagnostics. |
+| `GET /api/cricbuzz/live/discover` | Full discovery list with calculated priority scores. |
+| `POST /api/cricbuzz/live/reset` | Resets the in-memory state and clears selection cache. |
 
 ---
 
 ## 🛠️ Setup
 
-1.  Install dependencies: `npm install`
-2.  Set up `.env`:
+1.  Navigate to `/cricket-backend`
+2.  Install dependencies: `npm install`
+3.  Set up `.env`:
     ```env
     PORT=9000
-    # Add optional db config if using persistence
     ```
-3.  Run Server: `npm start` (or `npm run dev` for development)
+4.  Run Server: `npm run dev`
 
 ---
 
-## ⚡ Integrated Technologies
-*   **Express.js**: Web framework.
-*   **Puppeteer/Cheerio**: Scraper tools.
-*   **Axios**: HTTP client for external APIs.
+## ⚡ Core Technologies
+*   **Express.js**: Modern Node.js web server.
+*   **Puppeteer**: Headless browser for robust data scraping.
+*   **Axios**: Fast HTTP client with global headers.
+*   **Intelligence Services**: Custom-built logic layers for automated match resolution.
 

@@ -16,16 +16,16 @@ app.use('/api', scraperRoutes);
 // Root route — API documentation
 app.get('/', (req, res) => {
     res.status(200).json({
-        message: "Cricket MCP — Dynamic Match Discovery Engine",
+        message: "Cricket Intelligence Engine v3.0 — T20 World Cup Edition",
         status: "running",
-        version: "3.0",
+        version: "3.0.4",
         architecture: {
-            description: "Self-thinking match engine with zero DB dependency",
+            description: "Resilient Discovery Engine with Strict T20 WC Filtering",
             layers: [
-                "Layer 1 — Match Discovery (Cricbuzz API → Scraper fallback)",
-                "Layer 2 — Priority Intelligence (India > IPL > ICC > International > Domestic)",
-                "Layer 3 — Match Continuity Manager (no unnecessary switching)",
-                "Layer 4 — Data Validation & Pipeline",
+                "Layer 1 — Robust Discovery (Multi-source + Retry Logic)",
+                "Layer 2 — T20 World Cup Priority Intelligence",
+                "Layer 3 — Match Continuity & Stability Manager",
+                "Layer 4 — Data Integrity & Validation Pipeline",
             ],
         },
         endpoints: {
