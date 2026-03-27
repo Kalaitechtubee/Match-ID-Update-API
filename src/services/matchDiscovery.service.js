@@ -114,12 +114,24 @@ async function discoverFromScraper() {
     try {
         console.log('🔍 [Discovery] Falling back to Puppeteer scraper...');
 
-        const scrapedMatches = await scraperService.scrapeMatchesFromUrl(
+        const scrapedLive = await scraperService.scrapeMatchesFromUrl(
             'https://www.cricbuzz.com/cricket-match/live-scores',
             'live'
         );
 
-        const matches = scrapedMatches.map(m => ({
+        const scrapedUpcoming = await scraperService.scrapeMatchesFromUrl(
+            'https://www.cricbuzz.com/cricket-schedule/upcoming-series/international',
+            'upcoming'
+        );
+
+        const scrapedRecent = await scraperService.scrapeMatchesFromUrl(
+            'https://www.cricbuzz.com/cricket-match/live-scores/recent-matches',
+            'recent'
+        );
+
+        const allScraped = [...scrapedLive, ...scrapedUpcoming, ...scrapedRecent];
+
+        const matches = allScraped.map(m => ({
             matchId: String(m.match_id),
             team1: {
                 name: m.teams?.split(' vs ')?.[0] || 'Unknown',
@@ -134,7 +146,7 @@ async function discoverFromScraper() {
             matchDesc: '',
             seriesName: m.series || 'Unknown Series',
             seriesId: null,
-            state: m.status === 'Live' ? 'In Progress' : m.status,
+            state: m.status === 'Live' ? 'In Progress' : (m.match_type === 'upcoming' ? 'Preview' : m.status),
             status: m.status || '',
             venue: m.venue || '',
             city: '',
@@ -142,7 +154,7 @@ async function discoverFromScraper() {
             isComplete: m.status?.toLowerCase().includes('won') || false,
             team1Score: {},
             team2Score: {},
-            startDate: null,
+            startDate: m.date_time ? new Date(m.date_time).getTime() : null,
             source: 'scraper',
         }));
 
@@ -158,10 +170,22 @@ async function discoverFromScraper() {
 // ────────────────────────────────────────────────────
 // MAIN DISCOVERY FUNCTION (with caching)
 // ────────────────────────────────────────────────────
+// Singleton promise to prevent concurrent discovery runs
+let discoveryPromise = null;
+
+// ────────────────────────────────────────────────────
+// MAIN DISCOVERY FUNCTION (with caching & concurrency lock)
+// ────────────────────────────────────────────────────
 async function discoverMatches(forceRefresh = false) {
+    // 1. Return existing promise if already running (prevents Puppeteer lock issues)
+    if (discoveryPromise) {
+        console.log('⏳ [Discovery] Join existing discovery process...');
+        return discoveryPromise;
+    }
+
     const now = Date.now();
 
-    // Return cached if still fresh
+    // 2. Return cached if still fresh
     if (!forceRefresh && discoveryCache.matches.length > 0 && (now - discoveryCache.timestamp) < CACHE_TTL) {
         console.log(`📦 [Discovery] Using cached data (${discoveryCache.matches.length} matches, source: ${discoveryCache.source}, age: ${Math.round((now - discoveryCache.timestamp) / 1000)}s)`);
         return {
@@ -172,44 +196,90 @@ async function discoverMatches(forceRefresh = false) {
         };
     }
 
-    // Try Source A first (Cricbuzz API)
-    let result = await discoverFromAPI();
+    // 3. Start discovery process with lock
+    discoveryPromise = (async () => {
+        try {
+            // Try Source A first (Cricbuzz API)
+            let result = await discoverFromAPI();
 
-    // If API failed or returned 0 matches, try Source B (Scraper)
-    if (!result.success || result.matches.length === 0) {
-        console.log('⚠️ [Discovery] API returned no results, trying scraper...');
-        result = await discoverFromScraper();
-    }
+            // Helper to check if a match is a priority match
+            const isPriorityMatch = (m) => {
+                const series = (m.seriesName || '').toLowerCase();
+                const desc = (m.matchDesc || '').toLowerCase();
+                const allText = `${series} ${desc}`.toLowerCase();
+                
+                const isT20WC = (allText.includes('t20') && (allText.includes('world cup') || allText.includes('wc'))) ||
+                    allText.includes('icct20') ||
+                    allText.includes('world cup t20') ||
+                    allText.includes('champions trophy') ||
+                    allText.includes('wtc') ||
+                    allText.includes('world test championship');
 
-    // 🏆 T20 WORLD CUP ONLY FILTER
-    // As per requirement: Only scrape and display T20 World Cup matches
-    if (result.success && result.matches.length > 0) {
-        console.log('🏟️ [Discovery] Applying T20 World Cup strict filter...');
-        result.matches = result.matches.filter(m => {
-            const series = (m.seriesName || '').toLowerCase();
-            const desc = (m.matchDesc || '').toLowerCase();
-            const allText = `${series} ${desc}`.toLowerCase();
+                const isIPL = allText.includes('ipl') ||
+                    allText.includes('indian premier league') ||
+                    allText.includes('tata ipl');
 
-            // Check for T20 World Cup keywords
-            const isT20WC = (allText.includes('t20') && allText.includes('world cup')) ||
-                allText.includes('men\'s t20 wc') ||
-                allText.includes('t20wc');
+                const isIndia = allText.includes('india') || 
+                    allText.includes('ind') || 
+                    allText.includes('bcci');
 
-            return isT20WC;
-        });
-        console.log(`🏟️ [Discovery] Filter complete. Found ${result.matches.length} T20 World Cup matches.`);
-    }
+                return isT20WC || isIPL || isIndia;
+            };
 
-    // Update cache
-    if (result.success && result.matches.length > 0) {
-        discoveryCache = {
-            matches: result.matches,
-            timestamp: now,
-            source: result.source,
-        };
-    }
+            // If API failed or returned NO priority matches, try Source B (Scraper)
+            const hasPriorityMatches = result.matches && result.matches.some(isPriorityMatch);
+            
+            if (!result.success || !hasPriorityMatches) {
+                console.log('⚠️ [Discovery] API returned no priority results, trying scraper...');
+                const scraperResult = await discoverFromScraper();
+                
+                if (scraperResult.success && scraperResult.matches.length > 0) {
+                    // Combine matches, preventing duplicates by matchId
+                    const existingIds = new Set(result.matches.map(m => m.matchId));
+                    const newMatches = scraperResult.matches.filter(m => !existingIds.has(m.matchId));
+                    
+                    result.matches = [...result.matches, ...newMatches];
+                    result.source = result.matches.length > scraperResult.matches.length ? 'api+scraper' : 'scraper';
+                    result.success = true;
+                }
+            }
 
-    return result;
+            // 🏆 STRICT PRIMARY MATCH FILTER
+            // Rule: Only show T20 World Cup, IPL, or India matches.
+            // Requirement: "scraping only main matches and India based world based not unnessary matches not dispay"
+            if (result.success && result.matches.length > 0) {
+                const mainMatches = result.matches.filter(isPriorityMatch);
+                
+                if (mainMatches.length > 0) {
+                    console.log(`🏟️ [Discovery] Found ${mainMatches.length} main matches (T20 WC/IPL/India). Applying strict focus.`);
+                    result.matches = mainMatches;
+                } else {
+                    console.log('🏟️ [Discovery] No T20 WC, IPL or India found. Returning empty to avoid unnecessary matches.');
+                    result.matches = [];
+                }
+                
+                const iplCount = result.matches.filter(m => (m.seriesName || '').toLowerCase().includes('ipl')).length;
+                const wcCount = result.matches.filter(m => !((m.seriesName || '').toLowerCase().includes('ipl')) && !((m.team1?.name + m.team2?.name).toLowerCase().includes('india'))).length;
+                const indiaCount = result.matches.length - iplCount - wcCount;
+                console.log(`✅ [Discovery] Main matches selected: ${result.matches.length} (IPL: ${iplCount}, WC: ${wcCount}, India: ${indiaCount})`);
+            }
+
+            // Update cache
+            if (result.success && result.matches.length > 0) {
+                discoveryCache = {
+                    matches: result.matches,
+                    timestamp: Date.now(),
+                    source: result.source,
+                };
+            }
+
+            return result;
+        } finally {
+            discoveryPromise = null; // Release lock
+        }
+    })();
+
+    return discoveryPromise;
 }
 
 // ────────────────────────────────────────────────────

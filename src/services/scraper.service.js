@@ -31,9 +31,18 @@ async function scrapeMatchesFromUrl(url, matchType) {
         console.log('⚠️ [Scraper] Puppeteer not available, skipping scrape');
         return [];
     }
+    // Add small random delay to prevent concurrent launch race conditions
+    await new Promise(r => setTimeout(r, Math.random() * 800));
+
     const browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--disable-dev-shm-usage',
+            '--disable-extensions',
+            '--disable-gpu'
+        ]
     });
 
     try {
@@ -338,8 +347,13 @@ async function scrapeT20WorldCupSchedule() {
 
             sections.forEach(section => {
                 const text = section.innerText || '';
-                if (text.includes("ICC Men's T20 World Cup 2026")) {
-                    const links = Array.from(section.querySelectorAll('a[href*="/cricket-match-facts/"]'));
+                const lowerText = text.toLowerCase();
+                const isT20WC = (lowerText.includes('t20') && lowerText.includes('world cup')) || 
+                               (lowerText.includes('t20') && lowerText.includes('wc')) ||
+                               lowerText.includes('t20wc');
+                
+                if (isT20WC && lowerText.includes('2026')) {
+                    const links = Array.from(section.querySelectorAll('a[href*="/cricket-match-facts/"], a[href*="/live-cricket-scores/"]'));
                     links.forEach(link => {
                         const href = link.href;
                         const matchId = href.match(/\/(\d+)\//)?.[1];
